@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: session.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: session.c,v 1.3 2003/12/22 14:57:33 dskoll Exp $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -95,13 +95,13 @@ l2tp_session_hash_init(hash_table *tab)
 *  Frees a session, closing down all resources associated with it.
 ***********************************************************************/
 void
-l2tp_session_free(l2tp_session *ses, char const *reason)
+l2tp_session_free(l2tp_session *ses, char const *reason, int may_reestablish)
 {
     session_set_state(ses, SESSION_IDLE);
     DBG(l2tp_db(DBG_SESSION, "session_free(%s) %s\n",
 	   l2tp_debug_session_to_str(ses), reason));
     if (ses->call_ops && ses->call_ops->close) {
-	ses->call_ops->close(ses, reason);
+	ses->call_ops->close(ses, reason, may_reestablish);
     }
     memset(ses, 0, sizeof(l2tp_session));
     free(ses);
@@ -210,7 +210,7 @@ l2tp_session_notify_tunnel_open(l2tp_session *ses)
 			      0);
     if (!dgram) {
 	l2tp_set_errmsg("Could not establish session - out of memory");
-	l2tp_tunnel_delete_session(ses, "Out of memory");
+	l2tp_tunnel_delete_session(ses, "Out of memory", 0);
 	return;
     }
 
@@ -375,7 +375,7 @@ l2tp_session_send_CDN(l2tp_session *ses,
     l2tp_tunnel_xmit_control_message(tunnel, dgram);
 
     /* Free session */
-    l2tp_tunnel_delete_session(ses, buf+4);
+    l2tp_tunnel_delete_session(ses, buf+4, 0);
 }
 
 /**********************************************************************
@@ -473,7 +473,7 @@ l2tp_session_handle_CDN(l2tp_session *ses,
     val = l2tp_dgram_search_avp(dgram, ses->tunnel, NULL, NULL, &len,
 				VENDOR_IETF, AVP_RESULT_CODE);
     if (!val || len < 4) {
-	l2tp_tunnel_delete_session(ses, "Received CDN");
+	l2tp_tunnel_delete_session(ses, "Received CDN", 0);
     } else {
 	uint16_t result_code, error_code;
 	char *msg;
@@ -486,7 +486,7 @@ l2tp_session_handle_CDN(l2tp_session *ses,
 	}
 	snprintf(buf, sizeof(buf), "Received CDN: result-code = %d, error-code = %d, message = '%.*s'", result_code, error_code, (int) len-4, msg);
 	buf[1023] = 0;
-	l2tp_tunnel_delete_session(ses, buf);
+	l2tp_tunnel_delete_session(ses, buf, 0);
     }
 }
 
@@ -577,6 +577,7 @@ l2tp_session_handle_ICRP(l2tp_session *ses,
 
     /* Set session state */
     session_set_state(ses, SESSION_ESTABLISHED);
+    ses->tunnel->peer->fail = 0;
 
 }
 
@@ -611,6 +612,7 @@ l2tp_session_handle_ICCN(l2tp_session *ses,
 
     /* Set session state */
     session_set_state(ses, SESSION_ESTABLISHED);
+    ses->tunnel->peer->fail = 0;
 
     /* Pull out and examine AVP's */
     while(1) {

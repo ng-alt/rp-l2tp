@@ -15,7 +15,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: sync-pppd.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: sync-pppd.c,v 1.4 2003/12/22 14:57:33 dskoll Exp $";
 
 #include "l2tp.h"
 #include <signal.h>
@@ -31,7 +31,7 @@ static char const RCSID[] =
 
 extern int pty_get(int *mfp, int *sfp);
 static int establish_session(l2tp_session *ses);
-static void close_session(l2tp_session *ses, char const *reason);
+static void close_session(l2tp_session *ses, char const *reason, int may_reestablish);
 static void handle_frame(l2tp_session *ses, unsigned char *buf, size_t len);
 
 /* Options for invoking pppd */
@@ -166,8 +166,9 @@ handle_frame(l2tp_session *ses,
 *  Kills pppd.
 ***********************************************************************/
 static void
-close_session(l2tp_session *ses, char const *reason)
+close_session(l2tp_session *ses, char const *reason, int may_reestablish)
 {
+    l2tp_tunnel *tunnel = ses->tunnel;
     struct slave *sl = ses->private;
     if (!sl) return;
 
@@ -180,6 +181,15 @@ close_session(l2tp_session *ses, char const *reason)
     sl->fd = -1;
     Event_DelHandler(sl->es, sl->event);
     sl->event = NULL;
+
+    /* Re-establish session if desired */
+    if (may_reestablish && tunnel->peer->persist && tunnel->peer->fail < tunnel->peer->maxfail) {
+        struct timeval t;
+
+        t.tv_sec = tunnel->peer->holdoff;
+        t.tv_usec = 0;
+        Event_AddTimerHandler(tunnel->es, t, l2tp_tunnel_reestablish, tunnel->peer);
+    }
 }
 
 /**********************************************************************
@@ -328,22 +338,46 @@ establish_session(l2tp_session *ses)
     sprintf(unit, "%d", (int) getpid());
 
     if (ses->we_are_lac) {
+        char **lac_opt;
+
 	/* Push a unit option */
 	if (use_unit_option && num_pppd_lac_options <= MAX_OPTS-2) {
 	    PUSH_LAC_OPT("unit");
 	    PUSH_LAC_OPT(unit);
 	}
+        /* push peer specific options */
+        lac_opt = ses->tunnel->peer->lac_options;
+        while (*lac_opt) {
+            if (num_pppd_lac_options <= MAX_OPTS-1) {
+		PUSH_LAC_OPT(*lac_opt);
+		++lac_opt;
+	    } else {
+		break;
+	    }
+        }
 	if (pppd_path) {
 	    execv(pppd_path, pppd_lac_options);
 	} else {
 	    execv(DEFAULT_PPPD_PATH, pppd_lac_options);
 	}
     } else {
+        char **lns_opt;
+
 	/* Push a unit option */
 	if (use_unit_option && num_pppd_lns_options <= MAX_OPTS-2) {
 	    PUSH_LNS_OPT("unit");
 	    PUSH_LNS_OPT(unit);
 	}
+        /* push peer specific options */
+        lns_opt = ses->tunnel->peer->lns_options;
+        while (*lns_opt) {
+            if (num_pppd_lns_options <= MAX_OPTS-1) {
+		PUSH_LNS_OPT(*lns_opt);
+		++lns_opt;
+	    } else {
+		break;
+	    }
+        }
 	if (pppd_path) {
 	    execv(pppd_path, pppd_lns_options);
 	} else {
@@ -383,9 +417,11 @@ handler_init(EventSelector *es)
     PUSH_LNS_OPT("nopcomp");
     PUSH_LNS_OPT("novj");
     PUSH_LNS_OPT("novjccomp");
+#if 0
     PUSH_LNS_OPT("logfile");
     PUSH_LNS_OPT("/dev/null");
     PUSH_LNS_OPT("nolog");
+#endif
     pppd_lns_options[num_pppd_lns_options] = NULL;
 
     PUSH_LAC_OPT("pppd");
@@ -397,9 +433,11 @@ handler_init(EventSelector *es)
     PUSH_LAC_OPT("nopcomp");
     PUSH_LAC_OPT("novj");
     PUSH_LAC_OPT("novjccomp");
+#if 0
     PUSH_LAC_OPT("logfile");
     PUSH_LAC_OPT("/dev/null");
     PUSH_LAC_OPT("nolog");
+#endif
     pppd_lac_options[num_pppd_lac_options] = NULL;
 }
 

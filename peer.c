@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: peer.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: peer.c,v 1.5 2003/12/22 14:57:33 dskoll Exp $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -34,19 +34,31 @@ static option_handler peer_option_handler = {
 static int port;
 
 static int handle_secret_option(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
+static int handle_hostname_option(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
+static int handle_peername_option(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
 static int set_lac_handler(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
+static int handle_lac_option(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
 static int set_lns_handler(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
+static int handle_lns_option(EventSelector *es, l2tp_opt_descriptor *desc, char const *value);
 
 /* Peer options */
 static l2tp_opt_descriptor peer_opts[] = {
     /*  name               type                 addr */
     { "peer",              OPT_TYPE_IPADDR,   &prototype.addr.sin_addr.s_addr},
+    { "mask",              OPT_TYPE_INT,      &prototype.mask_bits},
     { "secret",            OPT_TYPE_CALLFUNC, (void *) handle_secret_option},
+    { "hostname",          OPT_TYPE_CALLFUNC, (void *) handle_hostname_option},
+    { "peername",          OPT_TYPE_CALLFUNC, (void *) handle_peername_option},
     { "port",              OPT_TYPE_PORT,     &port },
     { "lac-handler",       OPT_TYPE_CALLFUNC, (void *) set_lac_handler},
+    { "lac-opts",          OPT_TYPE_CALLFUNC, (void *) handle_lac_option},
     { "lns-handler",       OPT_TYPE_CALLFUNC, (void *) set_lns_handler},
+    { "lns-opts",          OPT_TYPE_CALLFUNC, (void *) handle_lns_option},
     { "hide-avps",         OPT_TYPE_BOOL,     &prototype.hide_avps},
     { "retain-tunnel",     OPT_TYPE_BOOL,     &prototype.retain_tunnel},
+    { "persist",           OPT_TYPE_BOOL,     &prototype.persist},
+    { "holdoff",           OPT_TYPE_INT,      &prototype.holdoff},
+    { "maxfail",           OPT_TYPE_INT,      &prototype.maxfail},
     { "strict-ip-check",   OPT_TYPE_BOOL,     &prototype.validate_peer_ip},
     { NULL,                OPT_TYPE_BOOL,     NULL }
 };
@@ -102,6 +114,112 @@ handle_secret_option(EventSelector *es,
 }
 
 /**********************************************************************
+* %FUNCTION: handle_hostname_option
+* %ARGUMENTS:
+*  es -- event selector
+*  desc -- descriptor
+*  value -- the hostname
+* %RETURNS:
+*  0
+* %DESCRIPTION:
+*  Copies hostname to prototype
+***********************************************************************/
+static int
+handle_hostname_option(EventSelector *es,
+		     l2tp_opt_descriptor *desc,
+		     char const *value)
+{
+    strncpy(prototype.hostname, value, MAX_HOSTNAME);
+    prototype.hostname[MAX_HOSTNAME-1] = 0;
+    prototype.hostname_len = strlen(prototype.hostname);
+    return 0;
+}
+
+/**********************************************************************
+* %FUNCTION: handle_peername_option
+* %ARGUMENTS:
+*  es -- event selector
+*  desc -- descriptor
+*  value -- the hostname
+* %RETURNS:
+*  0
+* %DESCRIPTION:
+*  Copies peername to prototype
+***********************************************************************/
+static int
+handle_peername_option(EventSelector *es,
+		     l2tp_opt_descriptor *desc,
+		     char const *value)
+{
+    strncpy(prototype.peername, value, MAX_HOSTNAME);
+    prototype.peername[MAX_HOSTNAME-1] = 0;
+    prototype.peername_len = strlen(prototype.peername);
+    return 0;
+}
+
+/**********************************************************************
+* %FUNCTION: handle_lac_option
+* %ARGUMENTS:
+*  es -- event selector
+*  desc -- descriptor
+*  value -- the hostname
+* %RETURNS:
+*  0
+* %DESCRIPTION:
+*  Copies LAC options to prototype
+***********************************************************************/
+static int
+handle_lac_option(EventSelector *es,
+		     l2tp_opt_descriptor *desc,
+		     char const *value)
+{
+    char word[512];
+    while (value && *value) {
+        value = l2tp_chomp_word(value, word);
+        if (!word[0]) break;
+        if (prototype.num_lac_options < MAX_OPTS) {
+            char *x = strdup(word);
+            if (x) prototype.lac_options[prototype.num_lac_options++] = x;
+            prototype.lac_options[prototype.num_lac_options] = NULL;
+        } else {
+            break;
+        }
+    }
+    return 0;
+}
+
+/**********************************************************************
+* %FUNCTION: handle_lns_option
+* %ARGUMENTS:
+*  es -- event selector
+*  desc -- descriptor
+*  value -- the hostname
+* %RETURNS:
+*  0
+* %DESCRIPTION:
+*  Copies LNS options to prototype
+***********************************************************************/
+static int
+handle_lns_option(EventSelector *es,
+		     l2tp_opt_descriptor *desc,
+		     char const *value)
+{
+    char word[512];
+    while (value && *value) {
+        value = l2tp_chomp_word(value, word);
+        if (!word[0]) break;
+        if (prototype.num_lns_options < MAX_OPTS) {
+            char *x = strdup(word);
+            if (x) prototype.lns_options[prototype.num_lns_options++] = x;
+            prototype.lns_options[prototype.num_lns_options] = NULL;
+        } else {
+            break;
+        }
+    }
+    return 0;
+}
+
+/**********************************************************************
 * %FUNCTION: peer_process_option
 * %ARGUMENTS:
 *  es -- event selector
@@ -122,6 +240,7 @@ peer_process_option(EventSelector *es,
     if (!strcmp(name, "*begin*")) {
 	/* Switching in to peer context */
 	memset(&prototype, 0, sizeof(prototype));
+	prototype.mask_bits = 32;
 	prototype.validate_peer_ip = 1;
 	port = 1701;
 	return 0;
@@ -148,12 +267,23 @@ peer_process_option(EventSelector *es,
 	peer = l2tp_peer_insert(&prototype.addr);
 	if (!peer) return -1;
 
+	peer->mask_bits = prototype.mask_bits;
+	memcpy(&peer->hostname,&prototype.hostname, sizeof(prototype.hostname));
+	peer->hostname_len = prototype.hostname_len;
+	memcpy(&peer->peername,&prototype.peername, sizeof(prototype.peername));
+	peer->peername_len = prototype.peername_len;
 	memcpy(&peer->secret, &prototype.secret, MAX_SECRET_LEN);
 	peer->secret_len = prototype.secret_len;
 	peer->lns_ops = prototype.lns_ops;
+        memcpy(&peer->lns_options,&prototype.lns_options,sizeof(prototype.lns_options));
 	peer->lac_ops = prototype.lac_ops;
+        memcpy(&peer->lac_options,&prototype.lac_options,sizeof(prototype.lac_options));
 	peer->hide_avps = prototype.hide_avps;
 	peer->retain_tunnel = prototype.retain_tunnel;
+	peer->persist = prototype.persist;
+	peer->holdoff = prototype.holdoff;
+	peer->maxfail = prototype.maxfail;
+	peer->fail = 0;
 	peer->validate_peer_ip = prototype.validate_peer_ip;
 	return 0;
     }
@@ -214,19 +344,57 @@ l2tp_peer_init(void)
 * %FUNCTION: peer_find
 * %ARGUMENTS:
 *  addr -- IP address of peer
+*  hostname -- AVP peer hostname
 * %RETURNS:
 *  A pointer to the peer with given IP address, or NULL if not found.
 * %DESCRIPTION:
 *  Searches peer hash table for specified peer.
 ***********************************************************************/
 l2tp_peer *
-l2tp_peer_find(struct sockaddr_in *addr)
+l2tp_peer_find(struct sockaddr_in *addr, char const *peername)
 {
-    l2tp_peer candidate;
+    void *cursor;
+    l2tp_peer *peer = NULL;
+    l2tp_peer *candidate = NULL;
+    char addr1_str[16], addr2_str[16];
 
-    candidate.addr = *addr;
+    for (candidate = hash_start(&all_peers, &cursor);
+	 candidate ;
+	 candidate = hash_next(&all_peers, &cursor)) {
 
-    return hash_find(&all_peers, &candidate);
+	unsigned long mask = candidate->mask_bits ?
+	    htonl(0xFFFFFFFFUL << (32 - candidate->mask_bits)) : 0;
+
+	strcpy(addr1_str, inet_ntoa(addr->sin_addr));
+	strcpy(addr2_str, inet_ntoa(candidate->addr.sin_addr));
+	DBG(l2tp_db(DBG_TUNNEL, "l2tp_peer_find(%s) examining peer %s/%d\n",
+	       addr1_str, addr2_str,
+	       candidate->mask_bits));
+
+	if ((candidate->addr.sin_addr.s_addr & mask) ==
+	    (addr->sin_addr.s_addr & mask)
+	    && (!peername ||
+		!(candidate->peername[0]) ||
+		!strcmp(peername,candidate->peername))) {
+
+	    if (peer == NULL) {
+		peer = candidate;
+	    } else {
+		if (peer->mask_bits < candidate->mask_bits)
+		    peer = candidate;
+	    }
+	}
+    }
+
+    strcpy(addr1_str, inet_ntoa(addr->sin_addr));
+    if (peer != NULL)
+	strcpy(addr2_str, inet_ntoa(peer->addr.sin_addr));
+    DBG(l2tp_db(DBG_TUNNEL, "l2tp_peer_find(%s) found %s/%d\n",
+	   addr1_str,
+	   peer == NULL ? "NULL" : addr2_str,
+	   peer == NULL ? -1 : peer->mask_bits));
+
+    return peer;
 }
 
 /**********************************************************************

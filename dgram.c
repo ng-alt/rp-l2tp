@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: dgram.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: dgram.c,v 1.3 2003/01/11 05:29:03 dossy Exp $";
 
 #include "l2tp.h"
 #include "md5.h"
@@ -601,6 +601,7 @@ l2tp_dgram_add_avp(l2tp_dgram *dgram,
 
     /* Do hiding where possible */
     if (tunnel                   &&
+	tunnel->peer             &&
 	tunnel->peer->hide_avps  &&
 	vendor == VENDOR_IETF    &&
 	tunnel->peer->secret_len &&

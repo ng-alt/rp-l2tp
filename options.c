@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: options.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: options.c,v 1.4 2003/06/11 02:16:34 dossy Exp $";
 
 #include "l2tp.h"
 #include <string.h>
@@ -41,6 +41,7 @@ static l2tp_opt_descriptor global_opts[] = {
     /*  name               type                 addr */
     { "load-handler",      OPT_TYPE_CALLFUNC,   (void *) do_load_handler },
     { "listen-port",       OPT_TYPE_PORT,       &Settings.listen_port },
+    { "listen-addr",       OPT_TYPE_IPADDR,     &Settings.listen_addr },
     { NULL,                OPT_TYPE_BOOL,       NULL }
 };
 
@@ -132,11 +133,11 @@ set_option(EventSelector *es,
 	return 0;
 
     case OPT_TYPE_STRING:
-	if (desc->addr) {
-	    free(desc->addr);
+	if (* (char **) desc->addr) {
+	    free(* (char **) desc->addr);
 	}
-	desc->addr = strdup(value);
-	if (!desc->addr) {
+	* (char **) desc->addr = strdup(value);
+	if (! * (char *) desc->addr) {
 	    l2tp_set_errmsg("Out of memory");
 	    return -1;
 	}
@@ -351,6 +352,7 @@ l2tp_parse_config_file(EventSelector *es,
 
     /* Defaults */
     Settings.listen_port = 1701;
+    Settings.listen_addr.s_addr = htonl(INADDR_ANY);
 
     fp = fopen(fname, "r");
     if (!fp) {

@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: cmd.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: cmd.c,v 1.3 2003/07/04 14:17:20 dskoll Exp $";
 
 #include "l2tp.h"
 #include "dstring.h"
@@ -340,7 +340,7 @@ cmd_start_session(EventSelector *es,
 	return;
     }
     memcpy(&haddr.sin_addr, he->h_addr, sizeof(haddr.sin_addr));
-    p = l2tp_peer_find(&haddr);
+    p = l2tp_peer_find(&haddr, NULL);
     if (!p) {
 	cmd_reply(es, fd, "ERR Unknown peer");
 	return;

@@ -44,6 +44,7 @@
 
 #define MAX_SECRET_LEN   96
 #define MAX_HOSTNAME     128
+#define MAX_OPTS         64
 
 #define MAX_RETRANSMISSIONS 5
 
@@ -74,15 +75,30 @@ typedef struct l2tp_dgram_t {
 typedef struct l2tp_peer_t {
     hash_bucket hash;		/* all_peers hash (hashed by address) */
     struct sockaddr_in addr;	/* Peer's address */
+    int mask_bits;		/* Peer's netmask in number of bits */
+    char hostname[MAX_HOSTNAME]; /* My hostname as presented to this peer. */
+    size_t hostname_len;	/* Length of my hostname */
+    char peername[MAX_HOSTNAME]; /* Peer's hostname. */
+    size_t peername_len;	/* Length of hostname */
     char secret[MAX_SECRET_LEN]; /* Secret for this peer */
     size_t secret_len;		/* Length of secret */
     struct l2tp_call_ops_t *lac_ops;	/* Call ops if we act as LAC */
+    char *lac_options[MAX_OPTS+1]; /* Handler options if we act as LAC */
+    int num_lac_options;        /* Number of above */
     struct l2tp_call_ops_t *lns_ops;	/* Call ops if we act as LNS */
+    char *lns_options[MAX_OPTS+1]; /* Handler options if we act as LNS */
+    int num_lns_options;        /* Number of above */
     int hide_avps;		/* If true, hide AVPs to this peer */
     int retain_tunnel;		/* If true, keep tunnel after last session is
 				   deleted.  Otherwise, delete tunnel too. */
     int validate_peer_ip;	/* If true, do not accept datagrams except
 				   from initial peer IP address */
+    int persist;                /* If true, keep session established */
+    int holdoff;                /* If persist is true, delay after which the
+                                   session is re-established. */
+    int maxfail;                /* If persist is true, try to establish a
+                                   broken session at most on maxfail times. */
+    int fail;                   /* Number of failed attempts. */
 } l2tp_peer;
 
 /* An L2TP tunnel */
@@ -151,7 +167,7 @@ typedef struct l2tp_call_ops_t {
 
     /* Called when session must be closed.  May be called without
        established() being called if session could not be established.*/
-    void (*close)(l2tp_session *ses, char const *reason);
+    void (*close)(l2tp_session *ses, char const *reason, int may_reestablish);
 
     /* Called when a PPP frame arrives over tunnel */
     void (*handle_ppp_frame)(l2tp_session *ses, unsigned char *buf,
@@ -175,6 +191,7 @@ typedef struct l2tp_lac_handler_t {
 /* Settings */
 typedef struct l2tp_settings_t {
     int listen_port;		/* Port we listen on */
+    struct in_addr listen_addr;	/* IP to bind to */
 } l2tp_settings;
 
 extern l2tp_settings Settings;
@@ -326,7 +343,8 @@ l2tp_session *l2tp_tunnel_find_session(l2tp_tunnel *tunnel, uint16_t sid);
 l2tp_tunnel *l2tp_tunnel_find_by_my_id(uint16_t id);
 l2tp_tunnel *l2tp_tunnel_find_for_peer(l2tp_peer *peer, EventSelector *es);
 void l2tp_tunnel_add_session(l2tp_session *ses);
-void l2tp_tunnel_delete_session(l2tp_session *ses, char const *reason);
+void l2tp_tunnel_reestablish(EventSelector *es, int fd, unsigned int flags, void *data);
+void l2tp_tunnel_delete_session(l2tp_session *ses, char const *reason, int may_reestablish);
 void l2tp_tunnel_handle_received_control_datagram(l2tp_dgram *dgram,
 						  EventSelector *es,
 						  struct sockaddr_in *from);
@@ -358,7 +376,7 @@ l2tp_lac_handler *l2tp_session_find_lac_handler(char const *name);
 void l2tp_session_send_CDN(l2tp_session *ses, int result_code, int error_code,
 			   char const *fmt, ...);
 void l2tp_session_hash_init(hash_table *tab);
-void l2tp_session_free(l2tp_session *ses, char const *reason);
+void l2tp_session_free(l2tp_session *ses, char const *reason, int may_reestablish);
 void l2tp_session_notify_tunnel_open(l2tp_session *ses);
 void l2tp_session_lns_handle_incoming_call(l2tp_tunnel *tunnel,
 				      uint16_t assigned_id,
@@ -435,7 +453,7 @@ int l2tp_network_init(EventSelector *es);
 
 /* peer.c */
 void l2tp_peer_init(void);
-l2tp_peer *l2tp_peer_find(struct sockaddr_in *addr);
+l2tp_peer *l2tp_peer_find(struct sockaddr_in *addr, char const *hostname);
 l2tp_peer *l2tp_peer_insert(struct sockaddr_in *addr);
 
 /* debug.c */

@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: tunnel.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: tunnel.c,v 1.6 2003/12/22 14:57:33 dskoll Exp $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -474,7 +474,7 @@ tunnel_free(l2tp_tunnel *tunnel)
     for (ses = hash_start(&tunnel->sessions_by_my_id, &cursor);
 	 ses ;
 	 ses = hash_next(&tunnel->sessions_by_my_id, &cursor)) {
-	l2tp_session_free(ses, "Tunnel closing down");
+	l2tp_session_free(ses, "Tunnel closing down", 1);
     }
     if (tunnel->hello_handler) Event_DelHandler(es, tunnel->hello_handler);
     if (tunnel->timeout_handler) Event_DelHandler(es, tunnel->timeout_handler);
@@ -531,10 +531,10 @@ tunnel_send_SCCRQ(l2tp_tunnel *tunnel)
     unsigned char tie_breaker[8];
     unsigned char challenge[16];
     int old_hide;
+    char *hostname;
 
     l2tp_dgram *dgram = l2tp_dgram_new_control(MESSAGE_SCCRQ, 0, 0);
     if (!dgram) return -1;
-
 
     /* Add the AVP's */
     /* HACK!  Cisco equipment cannot handle hidden AVP's in SCCRQ.
@@ -552,10 +552,12 @@ tunnel_send_SCCRQ(l2tp_tunnel *tunnel)
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
 		  sizeof(u32), VENDOR_IETF, AVP_FRAMING_CAPABILITIES, &u32);
 
+    hostname = tunnel->peer->hostname ? tunnel->peer->hostname : Hostname;
+
     /* Host name */
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
-		  strlen(Hostname), VENDOR_IETF, AVP_HOST_NAME,
-		  Hostname);
+		  strlen(hostname), VENDOR_IETF, AVP_HOST_NAME,
+		  hostname);
 
     /* Assigned ID */
     u16 = htons(tunnel->my_id);
@@ -626,6 +628,7 @@ l2tp_tunnel_handle_received_control_datagram(l2tp_dgram *dgram,
 	return;
     }
     tunnel = l2tp_tunnel_find_by_my_id(dgram->tid);
+
     if (!tunnel) {
 	/* TODO: Send error message back? */
 	l2tp_set_errmsg("Invalid control message - unknown tunnel ID %d",
@@ -634,7 +637,7 @@ l2tp_tunnel_handle_received_control_datagram(l2tp_dgram *dgram,
     }
 
     /* Verify that source address is the tunnel's peer */
-    if (tunnel->peer->validate_peer_ip) {
+    if (tunnel->peer && tunnel->peer->validate_peer_ip) {
 	if (from->sin_addr.s_addr != tunnel->peer_addr.sin_addr.s_addr) {
 	    l2tp_set_errmsg("Invalid control message for tunnel %s - not sent from peer",
 			    l2tp_debug_tunnel_to_str(tunnel));
@@ -732,6 +735,7 @@ tunnel_handle_SCCRQ(l2tp_dgram *dgram,
     uint16_t u16;
     uint32_t u32;
     unsigned char challenge[16];
+    char *hostname;
 
     /* TODO: Check if this is a retransmitted SCCRQ */
     /* Allocate a tunnel */
@@ -770,10 +774,12 @@ tunnel_handle_SCCRQ(l2tp_dgram *dgram,
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
 		  sizeof(u32), VENDOR_IETF, AVP_FRAMING_CAPABILITIES, &u32);
 
+    hostname = tunnel->peer->hostname ? tunnel->peer->hostname : Hostname;
+
     /* Host name */
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
-		  strlen(Hostname), VENDOR_IETF, AVP_HOST_NAME,
-		  Hostname);
+		  strlen(hostname), VENDOR_IETF, AVP_HOST_NAME,
+		  hostname);
 
     /* Assigned ID */
     u16 = htons(tunnel->my_id);
@@ -1060,7 +1066,7 @@ tunnel_handle_StopCCN(l2tp_tunnel *tunnel,
 	 ses ;
 	 ses = hash_next(&tunnel->sessions_by_my_id, &cursor)) {
 	hash_remove(&tunnel->sessions_by_my_id, ses);
-	l2tp_session_free(ses, "Tunnel closing down");
+	l2tp_session_free(ses, "Tunnel closing down", 1);
     }
 
     tunnel_set_state(tunnel, TUNNEL_RECEIVED_STOP_CCN);
@@ -1221,7 +1227,7 @@ tunnel_schedule_destruction(l2tp_tunnel *tunnel)
     for (ses = hash_start(&tunnel->sessions_by_my_id, &cursor);
 	 ses ;
 	 ses = hash_next(&tunnel->sessions_by_my_id, &cursor)) {
-	l2tp_session_free(ses, "Tunnel closing down");
+	l2tp_session_free(ses, "Tunnel closing down", 1);
     }
 
     /* Clear hash table */
@@ -1326,8 +1332,23 @@ tunnel_set_params(l2tp_tunnel *tunnel,
 
     uint16_t u16;
 
+    /* Get host name */
+    val = l2tp_dgram_search_avp(dgram, tunnel, &mandatory, &hidden, &len,
+                           VENDOR_IETF, AVP_HOST_NAME);
+    if (!val) {
+	l2tp_set_errmsg("No host name AVP in SCCRQ");
+	tunnel_free(tunnel);
+	return -1;
+    }
+
+    if (len >= MAX_HOSTNAME) len = MAX_HOSTNAME-1;
+    memcpy(tunnel->peer_hostname, val, len);
+    tunnel->peer_hostname[len+1] = 0;
+    DBG(l2tp_db(DBG_TUNNEL, "%s: Peer host name is '%s'\n",
+                           l2tp_debug_tunnel_to_str(tunnel), tunnel->peer_hostname));
+
     /* Find peer */
-    tunnel->peer = l2tp_peer_find(&tunnel->peer_addr);
+    tunnel->peer = l2tp_peer_find(&tunnel->peer_addr, tunnel->peer_hostname);
 
     /* Get assigned tunnel ID */
     val = l2tp_dgram_search_avp(dgram, tunnel, &mandatory, &hidden, &len,
@@ -1403,11 +1424,7 @@ tunnel_set_params(l2tp_tunnel *tunnel,
 	    break;
 
 	case AVP_HOST_NAME:
-	    if (len >= MAX_HOSTNAME) len = MAX_HOSTNAME-1;
-	    memcpy(tunnel->peer_hostname, val, len);
-	    tunnel->peer_hostname[len+1] = 0;
-	    DBG(l2tp_db(DBG_TUNNEL, "%s: Peer host name is '%s'\n",
-		   l2tp_debug_tunnel_to_str(tunnel), tunnel->peer_hostname));
+	    /* Already been handled */
 	    break;
 
 	case AVP_FRAMING_CAPABILITIES:
@@ -1674,6 +1691,22 @@ l2tp_tunnel_add_session(l2tp_session *ses)
     }
 }
 
+void
+l2tp_tunnel_reestablish(EventSelector *es,
+		      int fd,
+		      unsigned int flags,
+		      void *data)
+{
+    l2tp_peer *peer = (l2tp_peer*) data;
+    l2tp_session *ses;
+
+    ses = l2tp_session_call_lns(peer, "foobar", es, NULL);
+    if (!ses) {
+        DBG(l2tp_db(DBG_TUNNEL, "l2tp_tunnel_reestablish() failed\n"));
+        return;
+    }
+}
+
 /**********************************************************************
 * %FUNCTION: tunnel_delete_session
 * %ARGUMENTS:
@@ -1684,12 +1717,12 @@ l2tp_tunnel_add_session(l2tp_session *ses)
 *  Deletes session from tunnel's hash table and frees it.
 ***********************************************************************/
 void
-l2tp_tunnel_delete_session(l2tp_session *ses, char const *reason)
+l2tp_tunnel_delete_session(l2tp_session *ses, char const *reason, int may_reestablish)
 {
     l2tp_tunnel *tunnel = ses->tunnel;
 
     hash_remove(&tunnel->sessions_by_my_id, ses);
-    l2tp_session_free(ses, reason);
+    l2tp_session_free(ses, reason, may_reestablish);
 
     /* Tear down tunnel if so indicated */
     if (!hash_num_entries(&tunnel->sessions_by_my_id)) {

@@ -16,7 +16,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: network.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: network.c,v 1.3 2003/06/11 02:17:17 dossy Exp $";
 
 #include "l2tp.h"
 #include "event.h"
@@ -86,7 +86,7 @@ l2tp_network_init(EventSelector *es)
     }
 
     me.sin_family = AF_INET;
-    me.sin_addr.s_addr = htonl(INADDR_ANY);
+    me.sin_addr = Settings.listen_addr;
     me.sin_port = htons((uint16_t) Settings.listen_port);
     if (bind(Sock, (struct sockaddr *) &me, sizeof(me)) < 0) {
 	l2tp_set_errmsg("network_init: bind: %s", strerror(errno));

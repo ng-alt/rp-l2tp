@@ -1,12 +1,12 @@
 #!/bin/sh
 #
 # Tar up a releasable archive
-# $Id: make-release.sh,v 1.2 2002/09/30 19:45:00 dskoll Exp $
+# $Id: make-release.sh,v 1.3 2004/05/16 04:08:40 dskoll Exp $
 
-VERSION="$1"
+VERSION=`grep '^VERSION=' Makefile.in | sed -e 's/VERSION=//'`
 
 if test "$VERSION" = "" ; then
-    echo "Usage: make-release.sh version"
+    echo "Doh!  Could not figure out version from Makefile.in"
     exit 1
 fi
 
