@@ -81,6 +81,8 @@ typedef struct l2tp_peer_t {
     int hide_avps;		/* If true, hide AVPs to this peer */
     int retain_tunnel;		/* If true, keep tunnel after last session is
 				   deleted.  Otherwise, delete tunnel too. */
+    int validate_peer_ip;	/* If true, do not accept datagrams except
+				   from initial peer IP address */
 } l2tp_peer;
 
 /* An L2TP tunnel */

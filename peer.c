@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: peer.c,v 1.1.1.1 2002/09/30 18:46:56 dskoll Exp $";
+"$Id: peer.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -47,6 +47,7 @@ static l2tp_opt_descriptor peer_opts[] = {
     { "lns-handler",       OPT_TYPE_CALLFUNC, (void *) set_lns_handler},
     { "hide-avps",         OPT_TYPE_BOOL,     &prototype.hide_avps},
     { "retain-tunnel",     OPT_TYPE_BOOL,     &prototype.retain_tunnel},
+    { "strict-ip-check",   OPT_TYPE_BOOL,     &prototype.validate_peer_ip},
     { NULL,                OPT_TYPE_BOOL,     NULL }
 };
 
@@ -121,6 +122,7 @@ peer_process_option(EventSelector *es,
     if (!strcmp(name, "*begin*")) {
 	/* Switching in to peer context */
 	memset(&prototype, 0, sizeof(prototype));
+	prototype.validate_peer_ip = 1;
 	port = 1701;
 	return 0;
     }
@@ -152,7 +154,7 @@ peer_process_option(EventSelector *es,
 	peer->lac_ops = prototype.lac_ops;
 	peer->hide_avps = prototype.hide_avps;
 	peer->retain_tunnel = prototype.retain_tunnel;
-
+	peer->validate_peer_ip = prototype.validate_peer_ip;
 	return 0;
     }
 

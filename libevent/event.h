@@ -10,7 +10,7 @@
 * This program may be distributed according to the terms of the GNU
 * General Public License, version 2 or (at your option) any later version.
 *
-* $Id: event.h,v 1.1.1.1 2002/09/30 18:47:05 dskoll Exp $
+* $Id: event.h,v 1.2 2002/09/30 19:45:00 dskoll Exp $
 *
 * LIC: GPL
 *

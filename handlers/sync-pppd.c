@@ -15,7 +15,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: sync-pppd.c,v 1.1.1.1 2002/09/30 18:47:03 dskoll Exp $";
+"$Id: sync-pppd.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
 
 #include "l2tp.h"
 #include <signal.h>
@@ -24,6 +24,8 @@ static char const RCSID[] =
 #include <fcntl.h>
 
 #define HANDLER_NAME "sync-pppd"
+
+#define DEFAULT_PPPD_PATH "/usr/sbin/pppd"
 
 #define MAX_FDS 256
 
@@ -38,6 +40,8 @@ static char *pppd_lns_options[MAX_OPTS+1];
 static char *pppd_lac_options[MAX_OPTS+1];
 static int num_pppd_lns_options = 0;
 static int num_pppd_lac_options = 0;
+static int use_unit_option = 0;
+static char *pppd_path = NULL;
 
 #define PUSH_LNS_OPT(x) pppd_lns_options[num_pppd_lns_options++] = (x)
 #define PUSH_LAC_OPT(x) pppd_lac_options[num_pppd_lac_options++] = (x)
@@ -66,7 +70,9 @@ static l2tp_opt_descriptor my_opts[] = {
     /*  name               type                 addr */
     { "lac-pppd-opts",     OPT_TYPE_CALLFUNC,   (void *) handle_lac_opts},
     { "lns-pppd-opts",     OPT_TYPE_CALLFUNC,   (void *) handle_lns_opts},
-    { NULL,                OPT_TYPE_BOOL,     NULL }
+    { "set-ppp-if-name",   OPT_TYPE_BOOL,       &use_unit_option},
+    { "pppd-path",         OPT_TYPE_STRING,     &pppd_path},
+    { NULL,                OPT_TYPE_BOOL,       NULL }
 };
 
 static int
@@ -323,18 +329,26 @@ establish_session(l2tp_session *ses)
 
     if (ses->we_are_lac) {
 	/* Push a unit option */
-	if (num_pppd_lac_options <= MAX_OPTS-2) {
+	if (use_unit_option && num_pppd_lac_options <= MAX_OPTS-2) {
 	    PUSH_LAC_OPT("unit");
 	    PUSH_LAC_OPT(unit);
 	}
-	execv("/usr/sbin/pppd", pppd_lac_options);
+	if (pppd_path) {
+	    execv(pppd_path, pppd_lac_options);
+	} else {
+	    execv(DEFAULT_PPPD_PATH, pppd_lac_options);
+	}
     } else {
 	/* Push a unit option */
-	if (num_pppd_lns_options <= MAX_OPTS-2) {
+	if (use_unit_option && num_pppd_lns_options <= MAX_OPTS-2) {
 	    PUSH_LNS_OPT("unit");
 	    PUSH_LNS_OPT(unit);
 	}
-	execv("/usr/sbin/pppd", pppd_lns_options);
+	if (pppd_path) {
+	    execv(pppd_path, pppd_lns_options);
+	} else {
+	    execv(DEFAULT_PPPD_PATH, pppd_lns_options);
+	}
     }
 
     /* Doh.. execl failed */

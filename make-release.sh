@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Tar up a releasable archive
-# $Id: make-release.sh,v 1.1.1.1 2002/09/30 18:46:53 dskoll Exp $
+# $Id: make-release.sh,v 1.2 2002/09/30 19:45:00 dskoll Exp $
 
 VERSION="$1"
 

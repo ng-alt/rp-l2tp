@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: tunnel.c,v 1.1.1.1 2002/09/30 18:47:01 dskoll Exp $";
+"$Id: tunnel.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -634,10 +634,12 @@ l2tp_tunnel_handle_received_control_datagram(l2tp_dgram *dgram,
     }
 
     /* Verify that source address is the tunnel's peer */
-    if (from->sin_addr.s_addr != tunnel->peer_addr.sin_addr.s_addr) {
-	l2tp_set_errmsg("Invalid control message for tunnel %s - not sent from peer",
-		   l2tp_debug_tunnel_to_str(tunnel));
-	return;
+    if (tunnel->peer->validate_peer_ip) {
+	if (from->sin_addr.s_addr != tunnel->peer_addr.sin_addr.s_addr) {
+	    l2tp_set_errmsg("Invalid control message for tunnel %s - not sent from peer",
+			    l2tp_debug_tunnel_to_str(tunnel));
+	    return;
+	}
     }
 
     /* Set port for replies */

@@ -1,4 +1,4 @@
-.\" $Id: l2tp.conf.5,v 1.1.1.1 2002/09/30 18:47:03 dskoll Exp $ 
+.\" $Id: l2tp.conf.5,v 1.3 2002/09/30 20:20:28 dskoll Exp $ 
 .\" LIC: GPL
 .TH L2TP.CONF 5 "11 March 2002"
 .\""
@@ -99,6 +99,13 @@ If \fIbool\fR is 0, then the tunnel will be torn down when the last
 session terminates.  If it is 1, the tunnel will be maintained even
 if there are no sessions.
 
+.TP
+\fBo\fR strict-ip-check \fIbool\fR
+By default, the l2tp code will discard datagrams for a given tunnel
+if the source address does not match the specified peer's IP address.
+If you set strict-ip-check to 0, then the l2tp code will accept
+datagrams for a tunnel regardless of the source IP address.
+
 .SH The SYNC-PPPD Section
 
 NOTE: The sync-pppd handler only works on Linux.  You must have pppd version
@@ -116,6 +123,19 @@ Options to supply to pppd when we are acting as an LNS.
 \fBo\fR lac-pppd-opts \fIoptions\fR
 Options to supply to pppd when we are acting as an LAC.
 
+.TP
+\fBo\fR set-ppp-if-name \fIbool\dR
+If this is set to 1, then each PPP interface is named with the process-ID
+of the pppd process.  For example, if pppd has process-ID 3211, then the
+corresponding interface is called ppp3211.  If you set this to 0 (the default),
+then the kernel picks the interface name starting at ppp0.
+
+.TP
+\fBo\fR pppd-path \fIpath\fR
+Sets the path to the pppd program.  If this option is not supplied, the
+default path of \fI/usr/sbin/pppd\fR is used.
+
+.PP
 Note that the \fBsync-pppd\fR module does not directly support maintaining
 a pool of IP addresses for IP address assignment.  We recommend that you
 assign IP addresses using a RADIUS server and the latest PPP implementation
