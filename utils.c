@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: utils.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: utils.c 3323 2011-09-21 18:45:48Z lly.dev $";
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -27,6 +27,7 @@ static char const RCSID[] =
 #include <dlfcn.h>
 #include <string.h>
 #include <errno.h>
+#include <syslog.h>
 
 #include "l2tp.h"
 
@@ -88,6 +89,8 @@ l2tp_set_errmsg(char const *fmt, ...)
     va_end(ap);
     errmsg[MAX_ERRMSG_LEN-1] = 0;
     fprintf(stderr, "Error: %s\n", errmsg);
+    
+    vsyslog(LOG_ERR, fmt, ap);
 }
 
 /**********************************************************************
@@ -196,7 +199,8 @@ l2tp_load_handler(EventSelector *es,
     if (*fname == '/') {
 	handle = dlopen(fname, RTLD_NOW);
     } else {
-	snprintf(buf, sizeof(buf), "%s/lib/l2tp/plugins/%s", PREFIX, fname);
+	/* ASUS snprintf(buf, sizeof(buf), PREFIX"/lib/l2tp/plugins/%s", fname); */
+	snprintf(buf, sizeof(buf), PREFIX"/lib/l2tp/%s", fname);
 	buf[sizeof(buf)-1] = 0;
 	handle = dlopen(buf, RTLD_NOW);
     }

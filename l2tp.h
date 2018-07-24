@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/route.h>
 
 #include "hash.h"
 #include "event.h"
@@ -132,6 +133,9 @@ typedef struct l2tp_tunnel_t {
     unsigned char response[MD5LEN]; /* Our response to challenge */
     unsigned char expected_response[MD5LEN]; /* Expected resp. to challenge */
     int state;			/* Tunnel state */
+    struct rtentry rt;		/* Route added to destination */
+    struct l2tp_call_ops_t *call_ops; /* Call ops                      */
+    void *private;		/* Private data for call-op's use */
 } l2tp_tunnel;
 
 /* A session within a tunnel */
@@ -172,6 +176,14 @@ typedef struct l2tp_call_ops_t {
     /* Called when a PPP frame arrives over tunnel */
     void (*handle_ppp_frame)(l2tp_session *ses, unsigned char *buf,
 			     size_t len);
+
+    /* Called once tunnel has been established (LAC) or when we want
+       to establish tunnel (LNS) */
+    int (*tunnel_establish)(l2tp_tunnel *tun);
+
+    /* Called when tunnel must be closed.  May be called without
+       established() being called if tunnel could not be established.*/
+    void (*tunnel_close)(l2tp_tunnel *tun);
 } l2tp_call_ops;
 
 /* an LNS handler */
@@ -397,7 +409,7 @@ l2tp_session *l2tp_session_call_lns(l2tp_peer *peer,
 l2tp_dgram *l2tp_dgram_new(size_t len);
 l2tp_dgram *l2tp_dgram_new_control(uint16_t msg_type, uint16_t tid, uint16_t sid);
 void l2tp_dgram_free(l2tp_dgram *dgram);
-l2tp_dgram *l2tp_dgram_take_from_wire(struct sockaddr_in *from);
+l2tp_dgram *l2tp_dgram_take_from_wire(int fd, struct sockaddr_in *from);
 int l2tp_dgram_send_to_wire(l2tp_dgram const *dgram,
 		       struct sockaddr_in const *to);
 int l2tp_dgram_send_ppp_frame(l2tp_session *ses, unsigned char const *buf,
@@ -450,6 +462,7 @@ extern int Sock;
 extern char Hostname[MAX_HOSTNAME];
 
 int l2tp_network_init(EventSelector *es);
+void network_readable(EventSelector *es, int fd, unsigned int flags, void *data);
 
 /* peer.c */
 void l2tp_peer_init(void);
@@ -480,5 +493,10 @@ int l2tp_option_set(EventSelector *es,
 
 void l2tp_option_register_section(option_handler *h);
 char const *l2tp_chomp_word(char const *line, char *word);
+
+/* tunnel.c */
+#ifdef RTCONFIG_VPNC
+extern int vpnc;
+#endif
 
 #endif

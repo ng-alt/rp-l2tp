@@ -14,13 +14,14 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: debug.c,v 1.2 2002/09/30 19:45:00 dskoll Exp $";
+"$Id: debug.c 3323 2011-09-21 18:45:48Z lly.dev $";
 
 #include "l2tp.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <syslog.h>
 
 #define AVPCASE(x) case AVP_ ## x: return #x
 #define MSGCASE(x) case MESSAGE_ ## x: return #x
@@ -193,6 +194,7 @@ l2tp_db(int what, char const *fmt, ...)
     va_start(ap, fmt);
     fprintf(stderr, "%4ld.%03ld ", sec_diff, usec_diff);
     vfprintf(stderr, fmt, ap);
+    vsyslog(LOG_DEBUG, fmt, ap);
     va_end(ap);
 }
 

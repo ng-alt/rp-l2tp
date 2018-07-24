@@ -14,7 +14,7 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: session.c,v 1.3 2003/12/22 14:57:33 dskoll Exp $";
+"$Id: session.c 3323 2011-09-21 18:45:48Z lly.dev $";
 
 #include "l2tp.h"
 #include <stddef.h>
@@ -473,7 +473,7 @@ l2tp_session_handle_CDN(l2tp_session *ses,
     val = l2tp_dgram_search_avp(dgram, ses->tunnel, NULL, NULL, &len,
 				VENDOR_IETF, AVP_RESULT_CODE);
     if (!val || len < 4) {
-	l2tp_tunnel_delete_session(ses, "Received CDN", 0);
+	l2tp_tunnel_delete_session(ses, "Received CDN", 1);
     } else {
 	uint16_t result_code, error_code;
 	char *msg;
@@ -486,7 +486,7 @@ l2tp_session_handle_CDN(l2tp_session *ses,
 	}
 	snprintf(buf, sizeof(buf), "Received CDN: result-code = %d, error-code = %d, message = '%.*s'", result_code, error_code, (int) len-4, msg);
 	buf[1023] = 0;
-	l2tp_tunnel_delete_session(ses, buf, 0);
+	l2tp_tunnel_delete_session(ses, buf, 1);
     }
 }
 
@@ -563,7 +563,7 @@ l2tp_session_handle_ICRP(l2tp_session *ses,
     /* TODO: Speed, etc. are faked for now. */
 
     /* Connect speed */
-    u32 = htonl(57600);
+    u32 = htonl(100000000);
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
 		  sizeof(u32), VENDOR_IETF, AVP_TX_CONNECT_SPEED, &u32);
 

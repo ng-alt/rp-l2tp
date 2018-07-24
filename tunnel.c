@@ -5,6 +5,8 @@
 * Functions for manipulating L2TP tunnel objects.
 *
 * Copyright (C) 2002 Roaring Penguin Software Inc.
+* Copyright (C) 2005-2007 Oleg I. Vdovikin (oleg@cs.msu.su)
+*	Persist fixes, route manipulation
 *
 * This software may be distributed under the terms of the GNU General
 * Public License, Version 2, or (at your option) any later version.
@@ -14,13 +16,18 @@
 ***********************************************************************/
 
 static char const RCSID[] =
-"$Id: tunnel.c,v 1.6 2003/12/22 14:57:33 dskoll Exp $";
+"$Id: tunnel.c 3323 2011-09-21 18:45:48Z lly.dev $";
 
 #include "l2tp.h"
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <netdb.h>
+#include <features.h>
+#include <resolv.h>
 
 /* Hash tables of all tunnels */
 static hash_table tunnels_by_my_id;
@@ -72,6 +79,10 @@ static char *state_names[] = {
     "received-stop-ccn", "sent-stop-ccn"
 };
 
+#ifdef RTCONFIG_VPNC
+int vpnc = 0;
+#endif
+
 #define VENDOR_STR "Roaring Penguin Software Inc."
 
 /* Comparison of serial numbers according to RFC 1982 */
@@ -80,6 +91,12 @@ static char *state_names[] = {
 
 #define SERIAL_LT(a, b) \
 (((a) < (b) && (b) - (a) < 32768) || ((a) > (b) && (a) - (b) > 32768))
+
+/* Route manipulation */
+#define sin_addr(s) (((struct sockaddr_in *)(s))->sin_addr)
+#define route_msg l2tp_set_errmsg
+static int route_add(const struct in_addr inetaddr, struct rtentry *rt);
+static int route_del(struct rtentry *rt);
 
 /**********************************************************************
 * %FUNCTION: tunnel_set_state
@@ -437,13 +454,14 @@ tunnel_new(EventSelector *es)
 
     memset(tunnel, 0, sizeof(l2tp_tunnel));
     l2tp_session_hash_init(&tunnel->sessions_by_my_id);
-    tunnel->rws = 4;
+    tunnel->rws = 8;
     tunnel->peer_rws = 1;
     tunnel->es = es;
     tunnel->timeout = 1;
     tunnel->my_id = tunnel_make_tid();
     tunnel->ssthresh = 1;
     tunnel->cwnd = 1;
+    tunnel->private = NULL;
 
     hash_insert(&tunnels_by_my_id, tunnel);
     DBG(l2tp_db(DBG_TUNNEL, "tunnel_new() -> %s\n", l2tp_debug_tunnel_to_str(tunnel)));
@@ -483,6 +501,14 @@ tunnel_free(l2tp_tunnel *tunnel)
     while(tunnel->xmit_queue_head) {
 	tunnel_dequeue_head(tunnel);
     }
+
+    DBG(l2tp_db(DBG_TUNNEL, "tunnel_close(%s) ops: %p\n",
+	l2tp_debug_tunnel_to_str(tunnel), tunnel->call_ops));
+    if (tunnel->call_ops && tunnel->call_ops->tunnel_close) {
+	tunnel->call_ops->tunnel_close(tunnel);
+    }
+
+    route_del(&tunnel->rt);
     memset(tunnel, 0, sizeof(l2tp_tunnel));
     free(tunnel);
 }
@@ -501,12 +527,46 @@ static l2tp_tunnel *
 tunnel_establish(l2tp_peer *peer, EventSelector *es)
 {
     l2tp_tunnel *tunnel;
+    struct sockaddr_in peer_addr = peer->addr;
+    struct hostent *he;
 
+    /* check peer_addr and resolv it based on the peername if needed */
+    if (peer_addr.sin_addr.s_addr == INADDR_ANY) {
+#if !defined(__UCLIBC__) \
+ || (__UCLIBC_MAJOR__ == 0 \
+ && (__UCLIBC_MINOR__ < 9 || (__UCLIBC_MINOR__ == 9 && __UCLIBC_SUBLEVEL__ < 31)))
+	/* force ns refresh from resolv.conf with uClibc pre-0.9.31 */
+	res_init();
+#endif
+	he = gethostbyname(peer->peername);
+	if (!he) {
+            l2tp_set_errmsg("tunnel_establish: gethostbyname failed for '%s'", peer->peername);
+	    if (peer->persist && (peer->maxfail == 0 || peer->fail++ < peer->maxfail)) 
+	    {
+		struct timeval t;
+
+		t.tv_sec = peer->holdoff;
+		t.tv_usec = 0;
+		Event_AddTimerHandler(es, t, l2tp_tunnel_reestablish, peer);
+	    }
+	    return NULL;
+	}
+	memcpy(&peer_addr.sin_addr, he->h_addr, sizeof(peer_addr.sin_addr));
+    }
+    
     tunnel = tunnel_new(es);
     if (!tunnel) return NULL;
 
     tunnel->peer = peer;
-    tunnel->peer_addr = peer->addr;
+    tunnel->peer_addr = peer_addr;
+    tunnel->call_ops = tunnel->peer->lac_ops;
+
+    DBG(l2tp_db(DBG_TUNNEL, "tunnel_establish(%s) -> %s (%s)\n",
+	    l2tp_debug_tunnel_to_str(tunnel),
+	    inet_ntoa(peer_addr.sin_addr), peer->peername));
+
+    memset(&tunnel->rt, 0, sizeof(tunnel->rt));
+    route_add(tunnel->peer_addr.sin_addr, &tunnel->rt);
 
     hash_insert(&tunnels_by_peer_address, tunnel);
     tunnel_send_SCCRQ(tunnel);
@@ -552,7 +612,7 @@ tunnel_send_SCCRQ(l2tp_tunnel *tunnel)
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
 		  sizeof(u32), VENDOR_IETF, AVP_FRAMING_CAPABILITIES, &u32);
 
-    hostname = tunnel->peer->hostname ? tunnel->peer->hostname : Hostname;
+    hostname = tunnel->peer->hostname[0] ? tunnel->peer->hostname : Hostname;
 
     /* Host name */
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
@@ -631,8 +691,8 @@ l2tp_tunnel_handle_received_control_datagram(l2tp_dgram *dgram,
 
     if (!tunnel) {
 	/* TODO: Send error message back? */
-	l2tp_set_errmsg("Invalid control message - unknown tunnel ID %d",
-		   (int) dgram->tid);
+	DBG(l2tp_db(DBG_TUNNEL, "Invalid control message - unknown tunnel ID %d\n",
+		   (int) dgram->tid));
 	return;
     }
 
@@ -774,7 +834,7 @@ tunnel_handle_SCCRQ(l2tp_dgram *dgram,
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
 		  sizeof(u32), VENDOR_IETF, AVP_FRAMING_CAPABILITIES, &u32);
 
-    hostname = tunnel->peer->hostname ? tunnel->peer->hostname : Hostname;
+    hostname = tunnel->peer->hostname[0] ? tunnel->peer->hostname : Hostname;
 
     /* Host name */
     l2tp_dgram_add_avp(dgram, tunnel, MANDATORY,
@@ -947,6 +1007,8 @@ tunnel_handle_timeout(EventSelector *es,
 
     /* Timeout handler has fired */
     tunnel->timeout_handler = NULL;
+    DBG(l2tp_db(DBG_FLOW, "tunnel_handle_timeout(%s)\n",
+	   l2tp_debug_tunnel_to_str(tunnel)));
 
     /* Reset xmit_new_dgrams */
     tunnel->xmit_new_dgrams = tunnel->xmit_queue_head;
@@ -966,6 +1028,17 @@ tunnel_handle_timeout(EventSelector *es,
     if (tunnel->retransmissions >= MAX_RETRANSMISSIONS) {
 	l2tp_set_errmsg("Too many retransmissions on tunnel (%s); closing down",
 		   l2tp_debug_tunnel_to_str(tunnel));
+		   
+	if (tunnel->state < TUNNEL_ESTABLISHED && tunnel->peer && tunnel->peer->persist && 
+	    (tunnel->peer->maxfail == 0 || tunnel->peer->fail++ < tunnel->peer->maxfail)) 
+	{
+	    struct timeval t;
+
+	    t.tv_sec = tunnel->peer->holdoff;
+	    t.tv_usec = 0;
+	    Event_AddTimerHandler(tunnel->es, t, l2tp_tunnel_reestablish, tunnel->peer);
+	}
+	
 	/* Close tunnel... */
 	tunnel_free(tunnel);
 	return;
@@ -1167,6 +1240,9 @@ tunnel_process_received_datagram(l2tp_tunnel *tunnel,
     case MESSAGE_ICCN:
 	l2tp_session_handle_ICCN(ses, dgram);
 	return;
+    case MESSAGE_HELLO:
+	tunnel_setup_hello(tunnel);
+	return;
     }
 }
 
@@ -1253,7 +1329,7 @@ tunnel_send_ZLB(l2tp_tunnel *tunnel)
 	return;
     }
     dgram->Nr = tunnel->Nr;
-    dgram->Ns = tunnel->Ns;
+    dgram->Ns = tunnel->Ns_on_wire;
     l2tp_dgram_send_to_wire(dgram, &tunnel->peer_addr);
     l2tp_dgram_free(dgram);
 }
@@ -1282,6 +1358,15 @@ tunnel_handle_SCCRP(l2tp_tunnel *tunnel,
 
     /* Extract tunnel params */
     if (tunnel_set_params(tunnel, dgram) < 0) return;
+
+    DBG(l2tp_db(DBG_TUNNEL, "tunnel_establish(%s) ops: %p\n",
+	l2tp_debug_tunnel_to_str(tunnel), tunnel->call_ops));
+    if (tunnel->call_ops && tunnel->call_ops->tunnel_establish &&
+	tunnel->call_ops->tunnel_establish(tunnel) < 0) {
+	tunnel_send_StopCCN(tunnel, RESULT_GENERAL_ERROR, ERROR_VENDOR_SPECIFIC,
+			    "%s", l2tp_get_errmsg());
+	return;
+    }
 
     tunnel_set_state(tunnel, TUNNEL_ESTABLISHED);
     tunnel_setup_hello(tunnel);
@@ -1348,7 +1433,8 @@ tunnel_set_params(l2tp_tunnel *tunnel,
                            l2tp_debug_tunnel_to_str(tunnel), tunnel->peer_hostname));
 
     /* Find peer */
-    tunnel->peer = l2tp_peer_find(&tunnel->peer_addr, tunnel->peer_hostname);
+    if (tunnel->peer == NULL || tunnel->peer->addr.sin_addr.s_addr != INADDR_ANY)
+	tunnel->peer = l2tp_peer_find(&tunnel->peer_addr, tunnel->peer_hostname);
 
     /* Get assigned tunnel ID */
     val = l2tp_dgram_search_avp(dgram, tunnel, &mandatory, &hidden, &len,
@@ -1380,6 +1466,10 @@ tunnel_set_params(l2tp_tunnel *tunnel,
 	tunnel_send_StopCCN(tunnel, RESULT_NOAUTH, ERROR_OK, "%s", l2tp_get_errmsg());
 	return -1;
     }
+
+    /* Setup LNS call ops if LAC wasn't set before */
+    if (!tunnel->call_ops)
+	tunnel->call_ops = tunnel->peer->lns_ops;
 
     /* Pull out and examine AVP's */
     while(1) {
@@ -1598,6 +1688,15 @@ tunnel_handle_SCCCN(l2tp_tunnel *tunnel,
 	}
     }
 
+    DBG(l2tp_db(DBG_TUNNEL, "tunnel_establish(%s) ops: %p\n",
+	l2tp_debug_tunnel_to_str(tunnel), tunnel->call_ops));
+    if (tunnel->call_ops && tunnel->call_ops->tunnel_establish &&
+	tunnel->call_ops->tunnel_establish(tunnel) < 0) {
+	tunnel_send_StopCCN(tunnel, RESULT_GENERAL_ERROR, ERROR_VENDOR_SPECIFIC,
+			    "%s", l2tp_get_errmsg());
+	return;
+    }
+
     tunnel_set_state(tunnel, TUNNEL_ESTABLISHED);
     tunnel_setup_hello(tunnel);
 
@@ -1619,7 +1718,18 @@ l2tp_tunnel *
 l2tp_tunnel_find_for_peer(l2tp_peer *peer,
 		     EventSelector *es)
 {
-    l2tp_tunnel *tunnel = tunnel_find_bypeer(peer->addr);
+    l2tp_tunnel *tunnel;
+    void *cursor;
+    
+    if (peer->addr.sin_addr.s_addr == INADDR_ANY)
+    {
+	for (tunnel = hash_start(&tunnels_by_my_id, &cursor);
+	    tunnel && tunnel->peer != peer; 
+	    tunnel = hash_next(&tunnels_by_my_id, &cursor));
+    } else {
+	tunnel = tunnel_find_bypeer(peer->addr);
+    }
+
     if (tunnel) {
 	if (tunnel->state == TUNNEL_WAIT_CTL_REPLY ||
 	    tunnel->state == TUNNEL_WAIT_CTL_CONN ||
@@ -1720,6 +1830,17 @@ void
 l2tp_tunnel_delete_session(l2tp_session *ses, char const *reason, int may_reestablish)
 {
     l2tp_tunnel *tunnel = ses->tunnel;
+
+    if (may_reestablish && ses->state < SESSION_ESTABLISHED &&
+	tunnel->peer && tunnel->peer->persist &&
+	(tunnel->peer->maxfail == 0 || tunnel->peer->fail++ < tunnel->peer->maxfail))
+    {
+	struct timeval t;
+
+	t.tv_sec = tunnel->peer->holdoff;
+	t.tv_usec = 0;
+	Event_AddTimerHandler(tunnel->es, t, l2tp_tunnel_reestablish, tunnel->peer);
+    }
 
     hash_remove(&tunnel->sessions_by_my_id, ses);
     l2tp_session_free(ses, reason, may_reestablish);
@@ -1910,4 +2031,115 @@ l2tp_session *
 l2tp_tunnel_next_session(l2tp_tunnel *tunnel, void **cursor)
 {
     return hash_next(&tunnel->sessions_by_my_id, cursor);
+}
+
+/* Route manipulation */
+static int
+route_ctrl(int ctrl, struct rtentry *rt)
+{
+	int s;
+
+	/* Open a raw socket to the kernel */
+	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0 || ioctl(s, ctrl, rt) < 0)
+		route_msg("%s: %s", __FUNCTION__, strerror(errno));
+	else errno = 0;
+
+	close(s);
+	return errno;
+}
+
+static int
+route_del(struct rtentry *rt)
+{
+	if (rt->rt_dev) {
+		route_ctrl(SIOCDELRT, rt);
+		free(rt->rt_dev), rt->rt_dev = NULL;
+	}
+
+	return 0;
+}
+
+static int
+route_add(const struct in_addr inetaddr, struct rtentry *rt)
+{
+	char buf[256], dev[64], rdev[64];
+	u_int32_t dest, mask, gateway, flags, bestmask = 0;
+	int metric;
+
+	FILE *f = fopen("/proc/net/route", "r");
+	if (f == NULL) {
+		route_msg("%s: /proc/net/route: %s", strerror(errno), __FUNCTION__);
+		return -1;
+	}
+
+	rt->rt_gateway.sa_family = 0;
+
+	while (fgets(buf, sizeof(buf), f))
+	{
+		if (sscanf(buf, "%63s %x %x %x %*s %*s %d %x", dev, &dest,
+			&gateway, &flags, &metric, &mask) != 6)
+			continue;
+		if ((flags & RTF_UP) == (RTF_UP) && (inetaddr.s_addr & mask) == dest &&
+#ifdef RTCONFIG_VPNC
+		    (dest || strncmp(dev, "ppp", 3) || vpnc) /* avoid default via pppX to avoid on-demand loops*/)
+#else
+		    (dest || strncmp(dev, "ppp", 3)) /* avoid default via pppX to avoid on-demand loops*/)		
+#endif
+		{
+			if ((mask | bestmask) == bestmask && rt->rt_gateway.sa_family)
+				continue;
+			bestmask = mask;
+
+			sin_addr(&rt->rt_gateway).s_addr = gateway;
+			rt->rt_gateway.sa_family = AF_INET;
+			rt->rt_flags = flags;
+			rt->rt_metric = metric;
+			strncpy(rdev, dev, sizeof(rdev));
+
+			if (mask == INADDR_BROADCAST)
+				break;
+		}
+	}
+
+	fclose(f);
+
+	/* check for no route */
+	if (rt->rt_gateway.sa_family != AF_INET) 
+	{
+		/* route_msg("%s: no route to host", __FUNCTION__); */
+		return -1;
+	}
+
+	/* check for existing route to this host,
+	 * add if missing based on the existing routes */
+	if (rt->rt_flags & RTF_HOST)
+	{
+		/* route_msg("%s: not adding existing route", __FUNCTION__); */
+		return -1;
+	}
+
+	sin_addr(&rt->rt_dst) = inetaddr;
+	rt->rt_dst.sa_family = AF_INET;
+
+	sin_addr(&rt->rt_genmask).s_addr = INADDR_BROADCAST;
+	rt->rt_genmask.sa_family = AF_INET;
+
+	rt->rt_flags &= RTF_GATEWAY;
+	rt->rt_flags |= RTF_UP | RTF_HOST;
+
+	rt->rt_metric++;
+	rt->rt_dev = strdup(rdev);
+
+	if (!rt->rt_dev)
+	{
+		/* route_msg("%s: no memory", __FUNCTION__); */
+		return -1;
+	}
+
+	if (!route_ctrl(SIOCADDRT, rt))
+		return 0;
+
+	free(rt->rt_dev), rt->rt_dev = NULL;
+
+	return -1;
 }
